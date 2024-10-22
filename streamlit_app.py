@@ -2,11 +2,16 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import plotly.express as px
+import folium
+from streamlit_folium import st_folium
+from datetime import datetime
 
 # Initialize SQLite database
 def init_db():
     conn = sqlite3.connect("medical_data.db")
     cursor = conn.cursor()
+
+    # Create tables for medical data and notifications
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS medical_data (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -17,6 +22,17 @@ def init_db():
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            abnormal_data TEXT NOT NULL,
+            abnormal_type TEXT NOT NULL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
     conn.commit()
     return conn, cursor
 
@@ -55,7 +71,31 @@ def submit_data(name, age, bp, hr, conn, cursor):
         VALUES (?, ?, ?, ?)
     """, (name, int(age), bp, int(hr)))
     conn.commit()
+
+    # Check if the data contains abnormal values and create a notification if needed
+    abnormality = detect_abnormal_data(name, bp, hr)
+    if abnormality:
+        cursor.execute("""
+            INSERT INTO notifications (name, abnormal_data, abnormal_type)
+            VALUES (?, ?, ?)
+        """, (name, abnormality['data'], abnormality['type']))
+        conn.commit()
+        st.success(f"Notification created for abnormal {abnormality['type']}!")
+
     st.success("Data submitted successfully!")
+
+# Detect abnormal data points and return notification details
+def detect_abnormal_data(name, bp, hr):
+    systolic, diastolic = map(int, bp.split('/'))
+    hr = int(hr)
+
+    if hr < 60 or hr > 100:
+        return {"data": f"Heart Rate: {hr} bpm", "type": "Heart Rate"}
+
+    if systolic > 140 or diastolic > 90:
+        return {"data": f"Blood Pressure: {systolic}/{diastolic} mmHg", "type": "Blood Pressure"}
+
+    return None
 
 # View submitted data as a dataframe
 def view_data(cursor):
@@ -69,27 +109,62 @@ def view_data(cursor):
         st.warning("No data found.")
         return pd.DataFrame()
 
-# Plot heart rate and blood pressure
+# Plot heart rate and blood pressure, highlighting abnormal values
 def plot_data(df):
     if not df.empty:
-        # Split blood pressure into systolic and diastolic for plotting
+        # Identify abnormal heart rates
+        df['Heart Rate Abnormal'] = df['Heart Rate'].apply(lambda x: x < 60 or x > 100)
         df['Systolic'] = df['Blood Pressure'].apply(lambda x: int(x.split('/')[0]))
         df['Diastolic'] = df['Blood Pressure'].apply(lambda x: int(x.split('/')[1]))
+        
+        # Identify abnormal blood pressure values
+        df['Blood Pressure Abnormal'] = df.apply(lambda row: row['Systolic'] > 140 or row['Diastolic'] > 90, axis=1)
 
-        # Plot heart rate
-        fig1 = px.line(df, x='Timestamp', y='Heart Rate', title='Heart Rate Over Time', markers=True)
+        # Plot heart rate with abnormal points highlighted
+        fig1 = px.scatter(df, x='Timestamp', y='Heart Rate', color='Heart Rate Abnormal',
+                          color_discrete_map={True: 'red', False: 'blue'},
+                          title='Heart Rate Over Time', labels={'Heart Rate Abnormal': 'Abnormal Heart Rate'})
         st.plotly_chart(fig1)
 
-        # Plot systolic and diastolic blood pressure
-        fig2 = px.line(df, x='Timestamp', y=['Systolic', 'Diastolic'], title='Blood Pressure (Systolic/Diastolic) Over Time', markers=True)
+        # Plot systolic and diastolic blood pressure with abnormal points highlighted
+        fig2 = px.scatter(df, x='Timestamp', y=['Systolic', 'Diastolic'], color='Blood Pressure Abnormal',
+                          color_discrete_map={True: 'red', False: 'blue'},
+                          title='Blood Pressure (Systolic/Diastolic) Over Time', labels={'Blood Pressure Abnormal': 'Abnormal Blood Pressure'})
         st.plotly_chart(fig2)
 
 # Notifications Page
-def notifications_page():
+def notifications_page(cursor):
     st.write("### Notifications")
-    # Placeholder for future notification features
-    st.info("No new notifications.")
-    st.write("Here you can display any notifications or alerts related to medical data or other important updates.")
+
+    # Fetch notifications from the database
+    cursor.execute("SELECT * FROM notifications ORDER BY timestamp DESC")
+    notifications = cursor.fetchall()
+
+    if notifications:
+        for notif in notifications:
+            st.write(f"**{notif[3]}** - **{notif[1]}** ({notif[2]})")
+    else:
+        st.info("No notifications available.")
+
+    # Simulate a map with the user's current location and the nearest hospital
+    st.write("### Nearby Hospital Route")
+    
+    # Example location (lat, lon) - Simulating user location
+    user_location = [35.7796, -78.6382]  # Raleigh, NC (dummy)
+    nearest_hospital = [35.7801, -78.6392]  # Dummy hospital location
+    
+    # Create map with user location and hospital
+    map_ = folium.Map(location=user_location, zoom_start=14)
+    
+    # Add markers for user location and hospital
+    folium.Marker(user_location, tooltip="Your Location", icon=folium.Icon(color="blue")).add_to(map_)
+    folium.Marker(nearest_hospital, tooltip="Nearest Hospital", icon=folium.Icon(color="red")).add_to(map_)
+    
+    # Draw route (simulated)
+    folium.PolyLine(locations=[user_location, nearest_hospital], color="green", weight=2.5).add_to(map_)
+    
+    # Display map in Streamlit
+    st_folium(map_, width=700, height=500)
 
 # Main Streamlit app logic
 def main():
@@ -122,13 +197,13 @@ def main():
         st.write("### Submitted Medical Data")
         df = view_data(cursor)
 
-        # Plot heart rate and blood pressure
+        # Plot heart rate and blood pressure with abnormal data highlighted
         if not df.empty:
             st.write("### Visualizations")
             plot_data(df)
 
     elif selection == "Notifications":
-        notifications_page()
+        notifications_page(cursor)
 
 if __name__ == "__main__":
     main()
