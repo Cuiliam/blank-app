@@ -11,7 +11,7 @@ def init_db():
     conn = sqlite3.connect("medical_data.db")
     cursor = conn.cursor()
 
-    # Create tables for medical data and notifications
+    # Create tables for medical data, notifications, and medications
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS medical_data (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,6 +29,16 @@ def init_db():
             name TEXT NOT NULL,
             abnormal_data TEXT NOT NULL,
             abnormal_type TEXT NOT NULL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS medications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            patient_name TEXT NOT NULL,
+            medication_name TEXT NOT NULL,
+            dosage TEXT NOT NULL,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -72,7 +82,7 @@ def submit_data(name, age, bp, hr, conn, cursor):
     """, (name, int(age), bp, int(hr)))
     conn.commit()
 
-    # Check if the data contains abnormal values and create a notification if needed
+    # Check for abnormalities
     abnormality = detect_abnormal_data(name, bp, hr)
     if abnormality:
         cursor.execute("""
@@ -84,7 +94,7 @@ def submit_data(name, age, bp, hr, conn, cursor):
 
     st.success("Data submitted successfully!")
 
-# Detect abnormal data points and return notification details
+# Detect abnormal data points
 def detect_abnormal_data(name, bp, hr):
     systolic, diastolic = map(int, bp.split('/'))
     hr = int(hr)
@@ -109,28 +119,43 @@ def view_data(cursor):
         st.warning("No data found.")
         return pd.DataFrame()
 
-# Plot heart rate and blood pressure, highlighting abnormal values
+# Log medication to the database
+def log_medication(name, med_name, dosage, conn, cursor):
+    cursor.execute("""
+        INSERT INTO medications (patient_name, medication_name, dosage)
+        VALUES (?, ?, ?)
+    """, (name, med_name, dosage))
+    conn.commit()
+
+# View medications as a dataframe
+def view_medications(cursor):
+    cursor.execute("SELECT * FROM medications")
+    records = cursor.fetchall()
+    if records:
+        df = pd.DataFrame(records, columns=["ID", "Patient Name", "Medication Name", "Dosage", "Timestamp"])
+        st.dataframe(df)
+        return df
+    else:
+        st.warning("No medications logged.")
+        return pd.DataFrame()
+
+# Plot heart rate and blood pressure
 def plot_data(df):
     if not df.empty:
-        # Identify abnormal heart rates
-        df['Heart Rate Abnormal'] = df['Heart Rate'].apply(lambda x: x < 60 or x > 100)
+        df['Timestamp'] = pd.to_datetime(df['Timestamp'])
+        
+        # Plot heart rate
+        fig_hr = px.line(df, x='Timestamp', y='Heart Rate', title='Heart Rate Over Time', markers=True)
+        st.plotly_chart(fig_hr)
+
+        # Split blood pressure into systolic and diastolic
         df['Systolic'] = df['Blood Pressure'].apply(lambda x: int(x.split('/')[0]))
         df['Diastolic'] = df['Blood Pressure'].apply(lambda x: int(x.split('/')[1]))
-        
-        # Identify abnormal blood pressure values
-        df['Blood Pressure Abnormal'] = df.apply(lambda row: row['Systolic'] > 140 or row['Diastolic'] > 90, axis=1)
 
-        # Plot heart rate with abnormal points highlighted
-        fig1 = px.scatter(df, x='Timestamp', y='Heart Rate', color='Heart Rate Abnormal',
-                          color_discrete_map={True: 'red', False: 'blue'},
-                          title='Heart Rate Over Time', labels={'Heart Rate Abnormal': 'Abnormal Heart Rate'})
-        st.plotly_chart(fig1)
-
-        # Plot systolic and diastolic blood pressure with abnormal points highlighted
-        fig2 = px.scatter(df, x='Timestamp', y=['Systolic', 'Diastolic'], color='Blood Pressure Abnormal',
-                          color_discrete_map={True: 'red', False: 'blue'},
-                          title='Blood Pressure (Systolic/Diastolic) Over Time', labels={'Blood Pressure Abnormal': 'Abnormal Blood Pressure'})
-        st.plotly_chart(fig2)
+        # Plot blood pressure
+        fig_bp = px.line(df, x='Timestamp', y=['Systolic', 'Diastolic'], 
+                         title='Blood Pressure Over Time', markers=True)
+        st.plotly_chart(fig_bp)
 
 # Notifications Page
 def notifications_page(cursor):
@@ -169,7 +194,7 @@ def notifications_page(cursor):
 # Main Streamlit app logic
 def main():
     st.sidebar.title("Navigation")
-    selection = st.sidebar.selectbox("Go to", ["Data Input", "Notifications"])
+    selection = st.sidebar.selectbox("Go to", ["Data Input", "Notifications", "Medication Tracker"])
 
     # Initialize the database
     conn, cursor = init_db()
@@ -204,6 +229,25 @@ def main():
 
     elif selection == "Notifications":
         notifications_page(cursor)
+
+    elif selection == "Medication Tracker":
+        st.title("Medication Tracker")
+        
+        # Input form for medication logging
+        name = st.text_input("Patient Name")
+        med_name = st.text_input("Medication Name")
+        dosage = st.text_input("Dosage")
+
+        if st.button("Log Medication"):
+            if name and med_name and dosage:
+                log_medication(name, med_name, dosage, conn, cursor)
+                st.success(f"{med_name} logged for {name} successfully!")
+            else:
+                st.error("Please fill in all fields.")
+
+        # Display medication history
+        st.write("### Medication History")
+        df_med = view_medications(cursor)
 
 if __name__ == "__main__":
     main()
